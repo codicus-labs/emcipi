@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+async-trait = "0.1.92"
 axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures = "0.3.34"
 process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group", "job-object", "kill-on-drop"] }
-rmcp = { version = "3.9", features = ["server", "client", "transport-io", "transport-child-process", "transport-streamable-http-server", "transport-streamable-http-client-reqwest", "reqwest"] }
+reqwest = { version = "0.13", default-features = false }
+rmcp = { version = "3.9", features = ["server", "client", "transport-io", "transport-child-process", "transport-streamable-http-server", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "process", "io-std", "sync", "time"] }

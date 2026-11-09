@@ -3,6 +3,7 @@ mod config;
 mod gateway;
 mod http;
 mod interpolate;
+mod oauth;
 mod platform;
 mod search;
 mod upstream;
@@ -56,6 +57,15 @@ enum Command {
     },
     /// Connect to all servers, print their tools and exit
     Tools,
+    /// Sign in to an OAuth-protected HTTP server and store its tokens
+    Login {
+        server: String,
+        /// Only print the URL instead of opening the browser
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Delete the stored tokens of a server
+    Logout { server: String },
     /// Run a tool search across all servers, as the model would see it
     Search {
         /// Keywords; empty lists the servers
@@ -139,6 +149,20 @@ async fn main() -> Result<()> {
             let result = http::serve(hub.clone(), opts, shutdown).await;
             hub.shutdown().await;
             result?;
+        }
+        Command::Login { server, no_browser } => {
+            let upstream = cfg
+                .servers
+                .get(&server)
+                .with_context(|| format!("no server '{server}' in {}", path.display()))?;
+            oauth::login(&server, upstream, &cfg.base_dir, !no_browser).await?;
+        }
+        Command::Logout { server } => {
+            if oauth::logout(&server)? {
+                eprintln!("Signed out of '{server}'.");
+            } else {
+                eprintln!("No stored login for '{server}'.");
+            }
         }
         Command::Search {
             query,

@@ -68,6 +68,14 @@ url = "https://mcp.example.com/mcp"
 headers = { Authorization = "Bearer ${cmd:op read op://Private/internal-mcp/token}" }
 description = "Internal tools"
 
+# OAuth: HTTP servers without an Authorization header sign in with
+# `emcipi login <server>`; tokens are stored outside this file and refreshed.
+[servers.sentry]
+url = "https://mcp.sentry.dev/mcp"
+description = "Sentry issues and events"
+# Only for servers without dynamic client registration:
+# oauth = { client_id = "my-client", client_secret = "${cmd:op read op://Private/sentry/secret}", scopes = ["read"], callback_port = 8765 }
+
 [servers.experimental]
 enabled = false
 command = "./my-server"

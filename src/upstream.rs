@@ -28,6 +28,7 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use crate::{
     cache::ToolStore,
     config::{ServerConfig, Transport},
+    oauth,
     platform::{self, ProcessTree},
 };
 
@@ -237,6 +238,7 @@ impl Upstream {
         }
         if let Some((at, err)) = &state.last_failure
             && at.elapsed() < RETRY_BACKOFF
+            && !self.logged_in_since(*at)
         {
             return Err(anyhow!("[{}] unavailable: {err}", self.name));
         }
@@ -260,7 +262,11 @@ impl Upstream {
                 Ok(client)
             }
             Ok(Err(e)) => {
-                let msg = format!("{e:#}");
+                let msg = if oauth::needs_login(&e) {
+                    format!("authentication required: run `emcipi login {}`", self.name)
+                } else {
+                    format!("{e:#}")
+                };
                 tracing::error!(server = %self.name, error = %msg, "connect failed");
                 state.last_failure = Some((Instant::now(), msg.clone()));
                 Err(anyhow!("[{}] connect failed: {msg}", self.name))
@@ -272,6 +278,17 @@ impl Upstream {
                 Err(anyhow!("[{}] {msg}", self.name))
             }
         }
+    }
+
+    /// A login in another process (`emcipi login`) should not wait for the retry backoff.
+    fn logged_in_since(&self, failure: Instant) -> bool {
+        let Some(path) = oauth::credentials_path(&self.name) else {
+            return false;
+        };
+        let failed_at = std::time::SystemTime::now() - failure.elapsed();
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| modified > failed_at)
     }
 
     async fn connect(&self) -> Result<Connection> {
@@ -338,11 +355,19 @@ impl Upstream {
                             .with_context(|| format!("invalid value for header '{k}'"))?,
                     );
                 }
-                let config =
-                    StreamableHttpClientTransportConfig::with_uri(url).custom_headers(custom);
-                let transport = StreamableHttpClientTransport::from_config(config);
+                let config = StreamableHttpClientTransportConfig::with_uri(url.as_str())
+                    .custom_headers(custom);
+                let client = if oauth::applies_to(&self.cfg) {
+                    let auth = oauth::client(&self.name, &url, &self.cfg, &self.base_dir).await?;
+                    let transport = StreamableHttpClientTransport::with_client(auth, config);
+                    handler.serve(transport).await?
+                } else {
+                    handler
+                        .serve(StreamableHttpClientTransport::from_config(config))
+                        .await?
+                };
                 Ok(Connection {
-                    client: Arc::new(handler.serve(transport).await?),
+                    client: Arc::new(client),
                     process_tree: None,
                 })
             }

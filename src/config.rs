@@ -94,12 +94,30 @@ pub struct ServerConfig {
     pub url: Option<String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    /// Only needed for servers without dynamic client registration or with fixed scopes.
+    pub oauth: Option<OAuthConfig>,
 
     /// Glob patterns (`*` wildcard). Empty means all tools.
     #[serde(default)]
     pub include_tools: Vec<String>,
     #[serde(default)]
     pub exclude_tools: Vec<String>,
+}
+
+/// OAuth settings of an HTTP server. Login itself needs no config: servers with
+/// dynamic client registration work with `emcipi login <server>` alone.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthConfig {
+    /// A client registered with the authorization server in advance.
+    pub client_id: Option<String>,
+    /// Placeholders allowed, e.g. `${cmd:op read ...}`.
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// Fixed loopback port for the login callback, for clients registered with a
+    /// specific redirect URI. Default: any free port.
+    pub callback_port: Option<u16>,
 }
 
 pub enum Transport {
@@ -219,11 +237,20 @@ impl ServerConfig {
             .env
             .iter()
             .map(|(k, v)| (format!("env.{k}"), v.as_str()));
+        let oauth_secret = self
+            .oauth
+            .as_ref()
+            .and_then(|o| o.client_secret.as_deref())
+            .map(|s| ("oauth.client_secret".to_owned(), s));
         let headers = self
             .headers
             .iter()
             .map(|(k, v)| (format!("headers.{k}"), v.as_str()));
-        single.chain(args).chain(env).chain(headers)
+        single
+            .chain(args)
+            .chain(env)
+            .chain(headers)
+            .chain(oauth_secret)
     }
 }
 
@@ -302,6 +329,14 @@ impl Config {
                 }
                 (None, None) => bail!("servers.{name}: needs 'command' (stdio) or 'url' (http)"),
                 _ => {}
+            }
+            if let Some(oauth) = &server.oauth {
+                if server.url.is_none() {
+                    bail!("servers.{name}: 'oauth' needs an HTTP server ('url')");
+                }
+                if oauth.client_secret.is_some() && oauth.client_id.is_none() {
+                    bail!("servers.{name}: 'oauth.client_secret' needs 'oauth.client_id'");
+                }
             }
             for (field, value) in server.templates() {
                 interpolate::check(value).with_context(|| format!("servers.{name}.{field}"))?;

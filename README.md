@@ -15,6 +15,7 @@ emcipi http                    # Streamable HTTP on 127.0.0.1:8808/mcp, one proc
 emcipi stdio                   # one gateway per client
 emcipi tools                   # test the config: connect all servers, list their tools
 emcipi search "create issue"   # test the tool search
+emcipi login sentry             # sign in to an OAuth-protected server
 ```
 
 | Flag | Env | |
@@ -75,6 +76,10 @@ Secrets stay out of the config. Placeholders fetch them, freshly on every connec
 stdio servers only see a base environment (`PATH`, `HOME`, locale, proxy, …) plus their own `env`. `inherit_env = true` gives them the full environment.
 
 > **macOS:** When an app or launchd starts emcipi, `/opt/homebrew/bin` is usually missing from `PATH`. Use absolute paths or set `PATH`.
+
+### OAuth
+
+HTTP servers without an `Authorization` header can use OAuth. Sign in once with `emcipi login <server>` (opens the browser) and emcipi stores and refreshes the tokens; `emcipi logout <server>` removes them. A running gateway picks up a new login without a restart. Servers without dynamic client registration need `oauth = { client_id = "…", client_secret = "…" }`.
 
 ## Modes
 

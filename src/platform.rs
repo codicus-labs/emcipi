@@ -125,6 +125,56 @@ pub fn default_cache_dir() -> Option<PathBuf> {
     dir
 }
 
+/// Where credentials are kept: `$XDG_STATE_HOME/emcipi` or `~/.local/state/emcipi` on
+/// Linux, `~/Library/Application Support/emcipi` on macOS, `%LOCALAPPDATA%\emcipi` on Windows.
+pub fn default_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let dir = home_dir().map(|h| h.join("Library/Application Support/emcipi"));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let dir = std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".local/state")))
+        .map(|d| d.join("emcipi"));
+    #[cfg(windows)]
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .filter(|v| !v.is_empty())
+        .map(|d| PathBuf::from(d).join("emcipi"));
+    dir
+}
+
+/// Opens `url` in the default browser; failures are ignored because the URL is also printed.
+pub fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    // `start` would need cmd.exe, which splits URLs at `&`.
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("rundll32");
+        cmd.arg("url.dll,FileProtocolHandler");
+        cmd
+    };
+    let _ = cmd
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Writes `data` so that only the current user can read it: mode 0600 on Unix; on
+/// Windows the per-user profile directories are already private.
+pub fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(data)
+}
+
 /// `~/` (or `~\`) means the home directory; relative paths resolve against `base_dir`.
 pub fn expand_path(path: &str, base_dir: &Path) -> PathBuf {
     let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
