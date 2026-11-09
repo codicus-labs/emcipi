@@ -60,7 +60,7 @@ include_tools = ["read_*", "list_*", "search_files"]
 # --- Streamable HTTP upstreams --------------------------------------------------
 [servers.context7]
 url = "https://mcp.context7.com/mcp"
-headers = { CONTEXT7_API_KEY = "${file:~/.config/emcipi/secrets/context7}" }
+headers = { Authorization = "Bearer ${file:~/.config/emcipi/secrets/context7}" }
 description = "Up-to-date library documentation"
 
 [servers.internal]
