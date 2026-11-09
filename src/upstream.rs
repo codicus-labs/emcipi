@@ -26,6 +26,7 @@ use rmcp::{
 use tokio::sync::{Mutex, RwLock, broadcast};
 
 use crate::{
+    cache::ToolStore,
     config::{ServerConfig, Transport},
     platform::{self, ProcessTree},
 };
@@ -38,6 +39,7 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 
 type Client = RunningService<RoleClient, UpstreamHandler>;
 type ToolCache = Arc<RwLock<Option<Arc<Vec<Tool>>>>>;
+type Instructions = Arc<std::sync::Mutex<Option<String>>>;
 
 pub struct Upstream {
     pub name: String,
@@ -46,13 +48,19 @@ pub struct Upstream {
     startup_timeout: Duration,
     idle_timeout: Option<Duration>,
     conn: Mutex<ConnState>,
-    /// Survives idle stops, so listing and searching tools does not respawn the server.
+    /// Filtered tools. Survives idle stops and is preloaded from [`ToolStore`], so listing
+    /// and searching tools does not start the server.
     tools: ToolCache,
     tools_changed: broadcast::Sender<()>,
     in_flight: AtomicUsize,
     last_used: std::sync::Mutex<Instant>,
     /// `instructions` from the server's initialize result; kept across idle stops.
-    instructions: std::sync::Mutex<Option<String>>,
+    instructions: Instructions,
+    store: ToolStore,
+    fingerprint: String,
+    cached_at_start: bool,
+    /// Concurrent first `tools/list` calls share one fetch.
+    fetching: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -72,10 +80,18 @@ pub struct UpstreamOptions {
     pub startup_timeout: Duration,
     pub idle_timeout: Option<Duration>,
     pub tools_changed: broadcast::Sender<()>,
+    pub store: ToolStore,
 }
 
 impl Upstream {
     pub fn new(name: String, cfg: ServerConfig, opts: UpstreamOptions) -> Self {
+        let fingerprint = cfg.fingerprint();
+        let cached = opts.store.load(&name, &fingerprint);
+        let cached_at_start = cached.is_some();
+        let (tools, instructions) = match cached {
+            Some(c) => (Some(Arc::new(filter_tools(&cfg, c.tools))), c.instructions),
+            None => (None, None),
+        };
         Self {
             name,
             cfg,
@@ -83,12 +99,21 @@ impl Upstream {
             startup_timeout: opts.startup_timeout,
             idle_timeout: opts.idle_timeout,
             conn: Mutex::default(),
-            tools: ToolCache::default(),
+            tools: Arc::new(RwLock::new(tools)),
             tools_changed: opts.tools_changed,
             in_flight: AtomicUsize::new(0),
             last_used: std::sync::Mutex::new(Instant::now()),
-            instructions: std::sync::Mutex::new(None),
+            instructions: Arc::new(std::sync::Mutex::new(instructions)),
+            store: opts.store,
+            fingerprint,
+            cached_at_start,
+            fetching: Mutex::new(()),
         }
+    }
+
+    /// Whether the tool list came from disk, so the server need not be started for it.
+    pub fn cached_at_start(&self) -> bool {
+        self.cached_at_start
     }
 
     pub fn idle_timeout(&self) -> Option<Duration> {
@@ -104,18 +129,31 @@ impl Upstream {
         if let Some(tools) = self.tools.read().await.clone() {
             return Ok(tools);
         }
+        let _fetching = self.fetching.lock().await;
+        if let Some(tools) = self.tools.read().await.clone() {
+            return Ok(tools);
+        }
+        self.refresh_tools().await
+    }
+
+    /// Fetches the tool list from the server, starting it if needed, and updates the
+    /// in-memory and on-disk caches.
+    pub async fn refresh_tools(&self) -> Result<Arc<Vec<Tool>>> {
         let _busy = self.busy();
         let client = self.client().await?;
-        let tools: Vec<Tool> = client
-            .list_all_tools()
-            .await
-            .with_context(|| format!("[{}] tools/list failed", self.name))?
-            .into_iter()
-            .filter(|t| self.cfg.tool_allowed(&t.name))
-            .collect();
-        let tools = Arc::new(tools);
-        *self.tools.write().await = Some(tools.clone());
-        Ok(tools)
+        self.sync().fetch(&client).await
+    }
+
+    fn sync(&self) -> ToolSync {
+        ToolSync {
+            name: self.name.clone(),
+            cfg: self.cfg.clone(),
+            fingerprint: self.fingerprint.clone(),
+            store: self.store.clone(),
+            tools: self.tools.clone(),
+            instructions: self.instructions.clone(),
+            tools_changed: self.tools_changed.clone(),
+        }
     }
 
     pub async fn call(&self, params: CallToolRequestParams) -> Result<CallToolResponse> {
@@ -188,9 +226,15 @@ impl Upstream {
         match tokio::time::timeout(self.startup_timeout, self.connect()).await {
             Ok(Ok(conn)) => {
                 self.watch_tool_changes(&conn.client);
-                if let Some(info) = conn.client.peer_info() {
-                    *self.instructions.lock().expect("instructions lock") =
-                        info.instructions.clone();
+                // A cached list may be outdated: compare it with the server's in the background.
+                if self.tools.read().await.is_some() {
+                    let sync = self.sync();
+                    let client = conn.client.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = sync.fetch(&client).await {
+                            tracing::debug!(server = %sync.name, "tool list refresh failed: {e:#}");
+                        }
+                    });
                 }
                 let client = conn.client.clone();
                 state.conn = Some(conn);
@@ -324,6 +368,45 @@ impl Upstream {
             }
         });
     }
+}
+
+/// Everything needed to update a server's tool list, detached from [`Upstream`] so it
+/// can run in a background task.
+struct ToolSync {
+    name: String,
+    cfg: ServerConfig,
+    fingerprint: String,
+    store: ToolStore,
+    tools: ToolCache,
+    instructions: Instructions,
+    tools_changed: broadcast::Sender<()>,
+}
+
+impl ToolSync {
+    async fn fetch(&self, client: &Client) -> Result<Arc<Vec<Tool>>> {
+        let all = client
+            .list_all_tools()
+            .await
+            .with_context(|| format!("[{}] tools/list failed", self.name))?;
+        let instructions = client.peer_info().and_then(|i| i.instructions.clone());
+        self.store
+            .save(&self.name, &self.fingerprint, &all, instructions.as_deref());
+        *self.instructions.lock().expect("instructions lock") = instructions;
+        let tools = Arc::new(filter_tools(&self.cfg, all));
+        let previous = self.tools.write().await.replace(tools.clone());
+        if previous.is_some_and(|p| *p != *tools) {
+            tracing::info!(server = %self.name, "tool list changed");
+            let _ = self.tools_changed.send(());
+        }
+        Ok(tools)
+    }
+}
+
+fn filter_tools(cfg: &ServerConfig, tools: Vec<Tool>) -> Vec<Tool> {
+    tools
+        .into_iter()
+        .filter(|t| cfg.tool_allowed(&t.name))
+        .collect()
 }
 
 struct BusyGuard<'a>(&'a Upstream);

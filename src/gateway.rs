@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, broadcast};
 
 use crate::{
+    cache::ToolStore,
     config::{Config, Mode},
     search,
     upstream::{Upstream, UpstreamOptions},
@@ -60,6 +61,7 @@ pub struct Hub {
 
 impl Hub {
     pub fn new(cfg: Config) -> Arc<Self> {
+        let store = ToolStore::new(crate::platform::default_cache_dir());
         let (tools_changed, mut changes) = broadcast::channel(16);
         let startup_timeout = cfg.startup_timeout();
         let tool_timeout = cfg.tool_timeout();
@@ -73,6 +75,7 @@ impl Hub {
                     startup_timeout,
                     idle_timeout: s.idle_timeout(cfg.idle_timeout_secs),
                     tools_changed: tools_changed.clone(),
+                    store: store.clone(),
                 };
                 Arc::new(Upstream::new(name, s, opts))
             })
@@ -116,9 +119,10 @@ impl Hub {
         format!("{server}{}{tool}", self.separator)
     }
 
-    /// Connects to all upstreams in the background so the first `tools/list` is fast.
+    /// Learns the tools of every upstream without a cached list, in the background, so
+    /// the first `tools/list` is fast. Upstreams with a cached list are not started.
     pub fn warm_up(self: &Arc<Self>) {
-        for upstream in &self.upstreams {
+        for upstream in self.upstreams.iter().filter(|u| !u.cached_at_start()) {
             let upstream = upstream.clone();
             tokio::spawn(async move {
                 let _ = upstream.tools().await;

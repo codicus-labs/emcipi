@@ -107,6 +107,24 @@ pub fn default_config_path() -> PathBuf {
         .join("config.toml")
 }
 
+/// Where tool lists are cached: `$XDG_CACHE_HOME/emcipi` or `~/.cache/emcipi` on Linux,
+/// `~/Library/Caches/emcipi` on macOS, `%LOCALAPPDATA%\emcipi\cache` on Windows.
+pub fn default_cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let dir = home_dir().map(|h| h.join("Library/Caches/emcipi"));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let dir = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".cache")))
+        .map(|d| d.join("emcipi"));
+    #[cfg(windows)]
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .filter(|v| !v.is_empty())
+        .map(|d| PathBuf::from(d).join("emcipi").join("cache"));
+    dir
+}
+
 /// `~/` (or `~\`) means the home directory; relative paths resolve against `base_dir`.
 pub fn expand_path(path: &str, base_dir: &Path) -> PathBuf {
     let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));

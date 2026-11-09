@@ -186,6 +186,20 @@ impl ServerConfig {
         })
     }
 
+    /// Identifies what the server is, as written in the config (placeholders unresolved),
+    /// so cached tool lists are dropped when it changes. Filters and modes are excluded.
+    pub fn fingerprint(&self) -> String {
+        let identity = serde_json::json!({
+            "command": self.command,
+            "args": self.args,
+            "env": self.env,
+            "cwd": self.cwd,
+            "url": self.url,
+            "headers": self.headers,
+        });
+        crate::cache::fingerprint(identity.to_string().as_bytes())
+    }
+
     pub fn tool_allowed(&self, tool: &str) -> bool {
         let included =
             self.include_tools.is_empty() || self.include_tools.iter().any(|p| glob_match(p, tool));

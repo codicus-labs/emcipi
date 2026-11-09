@@ -81,9 +81,9 @@ stdio servers only see a base environment (`PATH`, `HOME`, locale, proxy, …) p
 
 The mode can be set globally, per CLI flag, per endpoint or per server (`mode = …`). The server setting wins.
 
-## Idle stop
+## Idle stop and tool cache
 
-With `idle_timeout_secs`, unused stdio servers are stopped together with their child processes, so the `node` behind `npx` goes too. Their tool list stays cached; only a real tool call starts them again.
+With `idle_timeout_secs`, unused stdio servers are stopped together with their child processes, so the `node` behind `npx` goes too. Tool lists are cached on disk, so neither listing tools nor restarting emcipi starts a server; only a real tool call does.
 
 Don't use it for servers that keep session state, such as browser automation or in-memory stores. Set `idle_timeout_secs = 0` for those.
 

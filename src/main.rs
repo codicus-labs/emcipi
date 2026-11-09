@@ -1,3 +1,4 @@
+mod cache;
 mod config;
 mod gateway;
 mod http;
@@ -160,7 +161,7 @@ async fn main() -> Result<()> {
             let listings = join_all(
                 hub.upstreams()
                     .iter()
-                    .map(|u| async move { (u, u.tools().await) }),
+                    .map(|u| async move { (u, u.refresh_tools().await) }),
             )
             .await;
             for (upstream, result) in listings {
