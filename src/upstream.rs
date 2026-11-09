@@ -501,11 +501,14 @@ pub struct UpstreamHandler {
 }
 
 impl ClientHandler for UpstreamHandler {
+    /// rmcp defaults to its newest protocol version, which has no `initialize` handshake.
+    /// Servers like GitHub's answer an `initialize` naming it, but then reject the session.
     fn get_info(&self) -> ClientConfig {
         ClientConfig::new(
             ClientCapabilities::default(),
             Implementation::new("emcipi", env!("CARGO_PKG_VERSION")),
         )
+        .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
     }
 
     async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
