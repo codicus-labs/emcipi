@@ -363,7 +363,7 @@ Recommendation: at most as a separate, opt-in endpoint or mode (e.g. `/mcp/progr
 ### P3: Quality assurance
 
 - Ranking unit tests with a small corpus: name match beats description match, coverage beats single match (Pi's example `screenshot window`), exact name first, camelCase/snake_case split, plural.
-- A small golden list “query → expected tool” from the real upstreams of one's own config (Executor has `e2e/benchmarks/discovery.ts` for this), as an ignored test or a subcommand `emcipi search "<query>"` analogous to `emcipi tools`.
+- A small golden list “query → expected tool” from the real upstreams of one's own config (Executor has `e2e/benchmarks/discovery.ts` for this), as an ignored test or a subcommand `emcipi search "<query>"` analogous to `emcipi list`.
 
 ### What is deliberately not recommended
 

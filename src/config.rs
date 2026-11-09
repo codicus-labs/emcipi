@@ -140,6 +140,15 @@ impl Transport {
     }
 }
 
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Static => "static",
+            Mode::Dynamic => "dynamic",
+        }
+    }
+}
+
 impl ServerConfig {
     pub fn is_stdio(&self) -> bool {
         self.command.is_some()
@@ -277,8 +286,12 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read config {}", path.display()))?;
-        let mut cfg: Config =
-            toml::from_str(&raw).with_context(|| format!("invalid config {}", path.display()))?;
+        Self::parse(&raw, path).with_context(|| format!("invalid config {}", path.display()))
+    }
+
+    /// Parses and validates `raw` as the contents of the config file at `path`.
+    pub fn parse(raw: &str, path: &Path) -> Result<Self> {
+        let mut cfg: Config = toml::from_str(raw)?;
         cfg.base_dir = path
             .canonicalize()
             .ok()

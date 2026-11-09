@@ -77,6 +77,18 @@ impl ToolStore {
         }
     }
 
+    /// Deletes the entry of `server`. Returns whether there was one.
+    pub fn remove(&self, server: &str) -> std::io::Result<bool> {
+        let Some(path) = self.path(server) else {
+            return Ok(false);
+        };
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     fn path(&self, server: &str) -> Option<PathBuf> {
         self.dir.as_ref().map(|d| d.join(format!("{server}.json")))
     }
@@ -136,6 +148,9 @@ mod tests {
 
         std::fs::write(dir.join("math.json"), b"{broken").unwrap();
         assert!(store.load("math", "fp1").is_none());
+
+        assert!(store.remove("math").unwrap());
+        assert!(!store.remove("math").unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

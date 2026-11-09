@@ -38,6 +38,9 @@ const RETRY_BACKOFF: Duration = Duration::from_secs(30);
 /// How long a stopping server gets after stdin is closed, and again after SIGTERM.
 const STOP_GRACE: Duration = Duration::from_secs(3);
 
+/// Start of the error message when an OAuth server needs `emcipi login`.
+pub const LOGIN_REQUIRED: &str = "authentication required";
+
 type Client = RunningService<RoleClient, UpstreamHandler>;
 type ToolCache = Arc<RwLock<Option<Arc<Vec<Tool>>>>>;
 type Instructions = Arc<std::sync::Mutex<Option<String>>>;
@@ -140,6 +143,11 @@ impl Upstream {
 
     pub fn instructions(&self) -> Option<String> {
         self.instructions.lock().expect("instructions lock").clone()
+    }
+
+    /// The known tool list, without contacting the server.
+    pub async fn cached_tools(&self) -> Option<Arc<Vec<Tool>>> {
+        self.tools.read().await.clone()
     }
 
     /// Tools after include/exclude filtering, with their original (unprefixed) names.
@@ -263,7 +271,7 @@ impl Upstream {
             }
             Ok(Err(e)) => {
                 let msg = if oauth::needs_login(&e) {
-                    format!("authentication required: run `emcipi login {}`", self.name)
+                    format!("{LOGIN_REQUIRED}: run `emcipi login {}`", self.name)
                 } else {
                     format!("{e:#}")
                 };

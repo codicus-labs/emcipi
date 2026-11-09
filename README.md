@@ -20,10 +20,23 @@ Binaries for Linux, macOS and Windows are also on the [releases](../../releases)
 ```sh
 emcipi http                    # Streamable HTTP on 127.0.0.1:8808/mcp, one process for all clients
 emcipi stdio                   # one gateway per client
-emcipi tools                   # test the config: connect all servers, list their tools
+emcipi list                    # servers with mode, cached tool count and status; starts nothing
+emcipi list --refresh          # test the config: connect all servers, refresh their tool lists
+emcipi list github             # tool names of one server
 emcipi search "create issue"   # test the tool search
-emcipi login sentry             # sign in to an OAuth-protected server
+emcipi login sentry            # sign in to an OAuth-protected server
 ```
+
+Add and remove servers without editing the file by hand. Comments in the config are kept, and a running gateway picks up the change:
+
+```sh
+emcipi add fetch -- uvx mcp-server-fetch
+emcipi add github --dynamic -e 'GITHUB_PERSONAL_ACCESS_TOKEN=${cmd:gh auth token}' -- npx -y @modelcontextprotocol/server-github
+emcipi add docs --url https://example.com/mcp -H 'Authorization: Bearer ${file:~/.secrets/docs}'
+emcipi remove docs             # also deletes its cached tools and stored login
+```
+
+Use single quotes so the shell leaves the [placeholders](#secrets) alone.
 
 | Flag | Env | |
 |---|---|---|
