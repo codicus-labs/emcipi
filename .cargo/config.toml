@@ -1,0 +1,4 @@
+[env]
+# aws-lc-sys (TLS) needs NASM on Windows unless it may use its checked-in prebuilt
+# objects; this makes `cargo build` work there without extra tools.
+AWS_LC_SYS_PREBUILT_NASM = "1"

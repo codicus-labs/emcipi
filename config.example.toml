@@ -1,0 +1,75 @@
+# emcipi – Beispielkonfiguration
+# Standardpfad: $XDG_CONFIG_HOME/emcipi/config.toml (sonst ~/.config/emcipi/config.toml),
+# unter Windows %APPDATA%\emcipi\config.toml
+# Überschreiben mit `--config <pfad>` oder EMCIPI_CONFIG.
+#
+# Secrets gehören nicht in diese Datei. In command/args/env/cwd/url/headers und
+# http.auth_token werden Platzhalter aufgelöst, und zwar bei jedem (Re-)Connect,
+# rotierende Tokens funktionieren also:
+#   ${VAR}  ${env:VAR}       Umgebungsvariable (Fehler, wenn nicht gesetzt)
+#   ${VAR:-default}          mit Fallback (auch bei leerem Wert)
+#   ${file:pfad}             Dateiinhalt; ~/ und Pfade relativ zu dieser Datei
+#   ${cmd:programm args}     stdout des Programms (30 s Timeout), direkt gestartet,
+#                            ohne Shell: gleiches Verhalten auf Linux, macOS, Windows.
+#                            Quoting: '...' wörtlich, "..." mit \" und \\.
+#                            Shell nur explizit: ${cmd:sh -c '... | ...'}
+#   $${                      literales "${"
+# Bei file/cmd wird abschließender Whitespace/Zeilenumbruch entfernt.
+
+# Standardmodus für Server ohne eigenes `mode`.
+# Überschreibbar mit `--mode` / EMCIPI_MODE.
+#   "static":  alle Tools direkt gelistet, Name = <server>__<tool> (Default)
+#   "dynamic": nur die Meta-Tools search_tools / describe_tools / call_tool
+mode = "static"
+
+separator = "__"
+startup_timeout_secs = 30   # max. Zeit für Start + initialize eines Upstreams
+tool_timeout_secs = 300     # max. Laufzeit eines Tool-Calls
+
+# stdio-Server nach so vielen Sekunden ohne Aufruf beenden (0/weglassen = nie).
+# Beim nächsten Aufruf startet er neu, die Tool-Liste bleibt gecacht.
+# Überschreibbar mit `--idle-timeout` / EMCIPI_IDLE_TIMEOUT.
+idle_timeout_secs = 600
+
+[http]
+listen = "127.0.0.1:8808"   # oder --listen / EMCIPI_LISTEN
+path = "/mcp"               # zusätzlich immer: /mcp/static und /mcp/dynamic
+# allowed_hosts = ["localhost", "127.0.0.1", "mein-host.lan"]  # Default: nur Loopback
+# Token für eingehende Requests; besser über EMCIPI_AUTH_TOKEN setzen
+# auth_token = "${cmd:security find-generic-password -s emcipi -w}"
+
+# --- stdio-Upstreams ------------------------------------------------------------
+[servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+# Server sehen standardmäßig nur eine Basis-Umgebung (PATH, HOME, Locale, Proxy, ...)
+# plus ihr eigenes `env`. Secrets also explizit übergeben, z. B. aus dem Secret Manager:
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${cmd:gh auth token}" }
+description = "GitHub: Issues, Pull Requests, Repositories, Code-Suche"
+mode = "dynamic"             # viele Tools: nur über die Suche, auch bei --mode static
+exclude_tools = ["delete_*"]
+
+[servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "${HOME}/projects"]
+description = "Dateien lesen und schreiben unter ~/projects"
+mode = "static"              # immer direkt sichtbar, auch bei --mode dynamic
+idle_timeout_secs = 0        # nie stoppen
+inherit_env = true           # sieht die komplette Umgebung des Gateways
+include_tools = ["read_*", "list_*", "search_files"]
+
+# --- Streamable-HTTP-Upstreams --------------------------------------------------
+[servers.context7]
+url = "https://mcp.context7.com/mcp"
+headers = { CONTEXT7_API_KEY = "${file:~/.config/emcipi/secrets/context7}" }
+description = "Aktuelle Library-Dokumentation"
+
+[servers.internal]
+url = "https://mcp.example.com/mcp"
+headers = { Authorization = "Bearer ${cmd:op read op://Private/internal-mcp/token}" }
+description = "Interne Tools"
+
+[servers.experimental]
+enabled = false
+command = "./my-server"
+cwd = "~/dev/my-server"
