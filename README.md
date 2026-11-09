@@ -4,7 +4,14 @@ A lean MCP gateway in Rust for Linux, macOS and Windows. It puts any number of M
 
 ## Installation
 
-Binaries for Linux, macOS and Windows are on the [releases](../../releases) page. To build from source: `cargo build --release`.
+With [mise](https://mise.jdx.dev):
+
+```sh
+mise use -g github:codicus-labs/emcipi                     # release binary, checksum and provenance verified
+mise use -g 'cargo:codicus-labs/emcipi@branch:main'        # build the latest main (needs Rust)
+```
+
+Binaries for Linux, macOS and Windows are also on the [releases](../../releases) page. To build from source: `cargo build --release`.
 
 > **macOS:** The binaries are not signed. After a browser download, run `xattr -d com.apple.quarantine emcipi`.
 
