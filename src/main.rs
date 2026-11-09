@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    config::{Config, Mode},
+    config::{Config, Mode, Overrides},
     gateway::{Gateway, Hub, Scope, SearchArgs},
 };
 
@@ -82,21 +82,19 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let path = cli.config.unwrap_or_else(Config::default_path);
     let mut cfg = Config::load(&path)?;
-    if let Some(mode) = cli.mode {
-        cfg.mode = mode;
-    }
-    if let Some(secs) = cli.idle_timeout {
-        cfg.idle_timeout_secs = Some(secs);
-    }
-    let mode = cfg.mode;
+    let overrides = Overrides {
+        mode: cli.mode,
+        idle_timeout_secs: cli.idle_timeout,
+    };
 
     match cli.command {
         Command::Stdio => {
-            let hub = Hub::new(cfg);
+            let hub = Hub::new(cfg, overrides);
             hub.warm_up();
+            hub.watch_config(path, None);
             let gateway = Gateway {
                 hub: hub.clone(),
-                mode,
+                mode: None,
             };
             let service = gateway.serve(rmcp::transport::stdio()).await?;
             tokio::select! {
@@ -106,6 +104,7 @@ async fn main() -> Result<()> {
             hub.shutdown().await;
         }
         Command::Http { listen, auth_token } => {
+            let http_from_file = cfg.http.clone();
             if let Some(listen) = listen {
                 cfg.http.listen = listen;
             }
@@ -124,8 +123,9 @@ async fn main() -> Result<()> {
                 None => None,
             };
             let http_cfg = std::mem::take(&mut cfg.http);
-            let hub = Hub::new(cfg);
+            let hub = Hub::new(cfg, overrides);
             hub.warm_up();
+            hub.watch_config(path, Some(http_from_file));
             let shutdown = CancellationToken::new();
             let on_signal = shutdown.clone();
             tokio::spawn(async move {
@@ -135,7 +135,6 @@ async fn main() -> Result<()> {
             let opts = http::HttpOptions {
                 cfg: &http_cfg,
                 auth_token,
-                default_mode: mode,
             };
             let result = http::serve(hub.clone(), opts, shutdown).await;
             hub.shutdown().await;
@@ -146,26 +145,29 @@ async fn main() -> Result<()> {
             server,
             limit,
         } => {
-            let hub = Hub::new(cfg);
+            let hub = Hub::new(cfg, overrides);
             let args = SearchArgs {
                 query,
                 server,
                 limit,
                 include_schema: false,
             };
-            println!("{}", hub.search(args, Scope::AllServers).await);
+            println!("{}", hub.state().search(args, Scope::AllServers).await);
             hub.shutdown().await;
         }
         Command::Tools => {
-            let hub = Hub::new(cfg);
+            let hub = Hub::new(cfg, overrides);
+            let state = hub.state();
             let listings = join_all(
-                hub.upstreams()
+                state
+                    .upstreams()
                     .iter()
                     .map(|u| async move { (u, u.refresh_tools().await) }),
             )
             .await;
             for (upstream, result) in listings {
-                println!("[{}] mode={:?}", upstream.name, upstream.cfg.mode(mode));
+                let mode = upstream.cfg.mode(state.default_mode);
+                println!("[{}] mode={mode:?}", upstream.name);
                 match result {
                     Ok(tools) => {
                         for tool in tools.iter() {
@@ -173,7 +175,7 @@ async fn main() -> Result<()> {
                             let desc = desc.lines().next().unwrap_or("");
                             println!(
                                 "  {}  {desc}",
-                                hub.qualified_name(&upstream.name, &tool.name)
+                                state.qualified_name(&upstream.name, &tool.name)
                             );
                         }
                     }

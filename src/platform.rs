@@ -224,6 +224,45 @@ impl ProcessTree {
     pub fn kill(self) {}
 }
 
+/// Requests a config reload from outside: `SIGHUP` on Unix, nothing on Windows.
+pub struct ReloadSignal {
+    #[cfg(unix)]
+    signal: Option<tokio::signal::unix::Signal>,
+}
+
+#[cfg(unix)]
+impl ReloadSignal {
+    pub fn new() -> Self {
+        let signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup());
+        if let Err(e) = &signal {
+            tracing::warn!("cannot listen for SIGHUP: {e}");
+        }
+        Self {
+            signal: signal.ok(),
+        }
+    }
+
+    pub async fn recv(&mut self) {
+        match &mut self.signal {
+            Some(signal) => {
+                signal.recv().await;
+            }
+            None => std::future::pending().await,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl ReloadSignal {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub async fn recv(&mut self) {
+        std::future::pending::<()>().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

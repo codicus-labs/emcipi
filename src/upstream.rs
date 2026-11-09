@@ -111,6 +111,23 @@ impl Upstream {
         }
     }
 
+    /// Whether this upstream was created from the same server config and options, so it
+    /// can be kept running across a config reload.
+    pub fn has_setup(&self, cfg: &ServerConfig, opts: &UpstreamOptions) -> bool {
+        self.cfg == *cfg
+            && self.base_dir == opts.base_dir
+            && self.startup_timeout == opts.startup_timeout
+            && self.idle_timeout == opts.idle_timeout
+    }
+
+    /// Waits until no call is running, at most `limit`.
+    pub async fn wait_idle(&self, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        while self.in_flight.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Whether the tool list came from disk, so the server need not be started for it.
     pub fn cached_at_start(&self) -> bool {
         self.cached_at_start

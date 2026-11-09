@@ -1,4 +1,9 @@
-use std::{fmt::Write as _, sync::Arc, time::Duration};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use futures::future::join_all;
 use rmcp::{
@@ -16,7 +21,7 @@ use tokio::sync::{Mutex, broadcast};
 
 use crate::{
     cache::ToolStore,
-    config::{Config, Mode},
+    config::{Config, HttpConfig, Mode, Overrides},
     search,
     upstream::{Upstream, UpstreamOptions},
 };
@@ -51,18 +56,180 @@ impl Scope {
     }
 }
 
-/// Upstream connections shared by all client sessions.
+/// Upstream connections shared by all client sessions. The [`State`] is replaced on
+/// config reload; requests keep working on the snapshot they started with.
 pub struct Hub {
+    state: std::sync::RwLock<Arc<State>>,
+    peers: Mutex<Vec<Peer<RoleServer>>>,
+    store: ToolStore,
+    tools_changed: broadcast::Sender<()>,
+    overrides: Overrides,
+}
+
+/// One version of the configuration with its upstreams.
+pub struct State {
+    pub default_mode: Mode,
     separator: String,
     tool_timeout: Duration,
     upstreams: Vec<Arc<Upstream>>,
-    peers: Mutex<Vec<Peer<RoleServer>>>,
 }
 
 impl Hub {
-    pub fn new(cfg: Config) -> Arc<Self> {
+    pub fn new(mut cfg: Config, overrides: Overrides) -> Arc<Self> {
+        overrides.apply(&mut cfg);
         let store = ToolStore::new(crate::platform::default_cache_dir());
         let (tools_changed, mut changes) = broadcast::channel(16);
+        let (state, _) = State::build(cfg, None, &store, &tools_changed);
+        let hub = Arc::new(Self {
+            state: std::sync::RwLock::new(Arc::new(state)),
+            peers: Mutex::default(),
+            store,
+            tools_changed,
+            overrides,
+        });
+
+        let weak = Arc::downgrade(&hub);
+        tokio::spawn(async move {
+            while let Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) = changes.recv().await {
+                let Some(hub) = weak.upgrade() else { break };
+                hub.notify_tools_changed().await;
+            }
+        });
+
+        let weak = Arc::downgrade(&hub);
+        tokio::spawn(async move {
+            loop {
+                let Some(hub) = weak.upgrade() else { break };
+                let state = hub.state();
+                drop(hub);
+                join_all(state.upstreams.iter().map(|u| u.stop_if_idle())).await;
+                let shortest_idle = state
+                    .upstreams
+                    .iter()
+                    .filter_map(|u| u.idle_timeout())
+                    .min();
+                let period = shortest_idle.map_or(Duration::from_secs(30), |idle| {
+                    (idle / 4).clamp(Duration::from_secs(1), Duration::from_secs(30))
+                });
+                drop(state);
+                tokio::time::sleep(period).await;
+            }
+        });
+        hub
+    }
+
+    /// The current configuration snapshot.
+    pub fn state(&self) -> Arc<State> {
+        self.state.read().expect("state lock").clone()
+    }
+
+    /// Learns the tools of every upstream without a cached list, in the background, so
+    /// the first `tools/list` is fast. Upstreams with a cached list are not started.
+    pub fn warm_up(&self) {
+        warm_up(&self.state().upstreams);
+    }
+
+    pub async fn shutdown(&self) {
+        join_all(self.state().upstreams.iter().map(|u| u.shutdown())).await;
+    }
+
+    /// Applies a new configuration: unchanged servers keep running, added ones are
+    /// created, removed and changed ones are stopped once their running calls finish.
+    pub async fn reload(&self, mut cfg: Config) {
+        self.overrides.apply(&mut cfg);
+        let previous = self.state();
+        let (state, retired) = State::build(cfg, Some(&previous), &self.store, &self.tools_changed);
+        let added: Vec<Arc<Upstream>> = state
+            .upstreams
+            .iter()
+            .filter(|u| !previous.upstreams.iter().any(|p| Arc::ptr_eq(p, u)))
+            .cloned()
+            .collect();
+        tracing::info!(
+            servers = state.upstreams.len(),
+            started = added.len(),
+            stopped = retired.len(),
+            "config reloaded"
+        );
+        let grace = previous.tool_timeout;
+        *self.state.write().expect("state lock") = Arc::new(state);
+        drop(previous);
+        warm_up(&added);
+        for upstream in retired {
+            tokio::spawn(async move {
+                upstream.wait_idle(grace).await;
+                upstream.shutdown().await;
+            });
+        }
+        self.notify_tools_changed().await;
+    }
+
+    /// Reloads the config when the file changes (checked every 2 s) and, on Unix, on SIGHUP.
+    /// Settings of the running HTTP listener cannot change; they only produce a warning.
+    pub fn watch_config(self: &Arc<Self>, path: PathBuf, http: Option<HttpConfig>) {
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut reload_signal = crate::platform::ReloadSignal::new();
+            let mut last = file_stamp(&path);
+            loop {
+                let forced = tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => false,
+                    _ = reload_signal.recv() => true,
+                };
+                if !forced && file_stamp(&path) == last {
+                    continue;
+                }
+                // Editors often write in several steps; let the file settle.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                last = file_stamp(&path);
+                let Some(hub) = weak.upgrade() else { break };
+                match Config::load(&path) {
+                    Ok(cfg) => {
+                        if http.as_ref().is_some_and(|h| *h != cfg.http) {
+                            tracing::warn!("[http] settings changed; restart emcipi to apply them");
+                        }
+                        hub.reload(cfg).await;
+                    }
+                    Err(e) => {
+                        tracing::error!("config reload failed, keeping the current config: {e:#}")
+                    }
+                }
+            }
+        });
+    }
+
+    async fn notify_tools_changed(&self) {
+        let mut peers = self.peers.lock().await;
+        peers.retain(|p| !p.is_transport_closed());
+        for peer in peers.iter() {
+            let _ = peer.notify_tool_list_changed().await;
+        }
+    }
+}
+
+fn warm_up(upstreams: &[Arc<Upstream>]) {
+    for upstream in upstreams.iter().filter(|u| !u.cached_at_start()) {
+        let upstream = upstream.clone();
+        tokio::spawn(async move {
+            let _ = upstream.tools().await;
+        });
+    }
+}
+
+fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+impl State {
+    /// Builds the upstreams for `cfg`, reusing those of `previous` whose setup did not
+    /// change. Returns the new state and the previous upstreams that are no longer used.
+    fn build(
+        cfg: Config,
+        previous: Option<&State>,
+        store: &ToolStore,
+        tools_changed: &broadcast::Sender<()>,
+    ) -> (Self, Vec<Arc<Upstream>>) {
         let startup_timeout = cfg.startup_timeout();
         let tool_timeout = cfg.tool_timeout();
         let upstreams: Vec<Arc<Upstream>> = cfg
@@ -77,38 +244,31 @@ impl Hub {
                     tools_changed: tools_changed.clone(),
                     store: store.clone(),
                 };
-                Arc::new(Upstream::new(name, s, opts))
+                let reused = previous
+                    .and_then(|p| p.upstream(&name))
+                    .filter(|u| u.has_setup(&s, &opts));
+                match reused {
+                    Some(u) => u.clone(),
+                    None => Arc::new(Upstream::new(name, s, opts)),
+                }
             })
             .collect();
-        let shortest_idle = upstreams.iter().filter_map(|u| u.idle_timeout()).min();
-        let hub = Arc::new(Self {
+        let retired = previous
+            .map(|p| {
+                p.upstreams
+                    .iter()
+                    .filter(|old| !upstreams.iter().any(|u| Arc::ptr_eq(u, old)))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let state = Self {
+            default_mode: cfg.mode,
             separator: cfg.separator,
             tool_timeout,
             upstreams,
-            peers: Mutex::default(),
-        });
-
-        let weak = Arc::downgrade(&hub);
-        tokio::spawn(async move {
-            while let Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) = changes.recv().await {
-                let Some(hub) = weak.upgrade() else { break };
-                hub.notify_tools_changed().await;
-            }
-        });
-
-        if let Some(idle) = shortest_idle {
-            let weak = Arc::downgrade(&hub);
-            let period = (idle / 4).clamp(Duration::from_secs(1), Duration::from_secs(30));
-            tokio::spawn(async move {
-                let mut tick = tokio::time::interval(period);
-                loop {
-                    tick.tick().await;
-                    let Some(hub) = weak.upgrade() else { break };
-                    join_all(hub.upstreams.iter().map(|u| u.stop_if_idle())).await;
-                }
-            });
-        }
-        hub
+        };
+        (state, retired)
     }
 
     pub fn upstreams(&self) -> &[Arc<Upstream>] {
@@ -119,21 +279,6 @@ impl Hub {
         format!("{server}{}{tool}", self.separator)
     }
 
-    /// Learns the tools of every upstream without a cached list, in the background, so
-    /// the first `tools/list` is fast. Upstreams with a cached list are not started.
-    pub fn warm_up(self: &Arc<Self>) {
-        for upstream in self.upstreams.iter().filter(|u| !u.cached_at_start()) {
-            let upstream = upstream.clone();
-            tokio::spawn(async move {
-                let _ = upstream.tools().await;
-            });
-        }
-    }
-
-    pub async fn shutdown(&self) {
-        join_all(self.upstreams.iter().map(|u| u.shutdown())).await;
-    }
-
     fn has_dynamic(&self, default: Mode) -> bool {
         self.upstreams
             .iter()
@@ -142,14 +287,6 @@ impl Hub {
 
     fn upstream(&self, name: &str) -> Option<&Arc<Upstream>> {
         self.upstreams.iter().find(|u| u.name == name)
-    }
-
-    async fn notify_tools_changed(&self) {
-        let mut peers = self.peers.lock().await;
-        peers.retain(|p| !p.is_transport_closed());
-        for peer in peers.iter() {
-            let _ = peer.notify_tool_list_changed().await;
-        }
     }
 
     /// Tools of the selected upstreams, with qualified names. Failing upstreams are skipped.
@@ -520,11 +657,18 @@ impl Hub {
     }
 }
 
-/// One client session. `mode` is the default for servers without a pinned mode.
+/// One client session. `mode` forces a default mode for servers without a pinned one;
+/// `None` follows the config.
 #[derive(Clone)]
 pub struct Gateway {
     pub hub: Arc<Hub>,
-    pub mode: Mode,
+    pub mode: Option<Mode>,
+}
+
+impl Gateway {
+    fn mode(&self, state: &State) -> Mode {
+        self.mode.unwrap_or(state.default_mode)
+    }
 }
 
 impl ServerHandler for Gateway {
@@ -535,8 +679,10 @@ impl ServerHandler for Gateway {
             .build();
         let info = ServerConfig::new(caps)
             .with_server_info(Implementation::new("emcipi", env!("CARGO_PKG_VERSION")));
-        if self.hub.has_dynamic(self.mode) {
-            info.with_instructions(self.hub.instructions(self.mode))
+        let state = self.hub.state();
+        let mode = self.mode(&state);
+        if state.has_dynamic(mode) {
+            info.with_instructions(state.instructions(mode))
         } else {
             info
         }
@@ -551,16 +697,16 @@ impl ServerHandler for Gateway {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let mode = self.mode;
-        let mut tools: Vec<Tool> = self
-            .hub
+        let state = self.hub.state();
+        let mode = self.mode(&state);
+        let mut tools: Vec<Tool> = state
             .collect_tools(|u| u.cfg.mode(mode) == Mode::Static)
             .await
             .into_iter()
             .map(|(_, t)| t)
             .collect();
-        if self.hub.has_dynamic(mode) {
-            tools.extend(self.hub.meta_tools(mode));
+        if state.has_dynamic(mode) {
+            tools.extend(state.meta_tools(mode));
         }
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -570,24 +716,25 @@ impl ServerHandler for Gateway {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let hub = &self.hub;
-        if hub.has_dynamic(self.mode) {
+        let state = self.hub.state();
+        let mode = self.mode(&state);
+        if state.has_dynamic(mode) {
             match request.name.as_ref() {
                 SEARCH_TOOLS => {
                     let args = parse_args(&request)?;
-                    return Ok(tool_text(hub.search(args, Scope::Dynamic(self.mode)).await));
+                    return Ok(tool_text(state.search(args, Scope::Dynamic(mode)).await));
                 }
                 DESCRIBE_TOOLS => {
-                    return Ok(tool_text(hub.describe_tools(parse_args(&request)?).await));
+                    return Ok(tool_text(state.describe_tools(parse_args(&request)?).await));
                 }
                 CALL_TOOL => {
                     let args = parse_args(&request)?;
-                    return hub.call_via_meta(request, args).await;
+                    return state.call_via_meta(request, args).await;
                 }
                 _ => {}
             }
         }
-        hub.route(request).await
+        state.route(request).await
     }
 }
 
@@ -646,4 +793,67 @@ fn tool_text(text: String) -> CallToolResponse {
 
 fn tool_error(text: String) -> CallToolResponse {
     CallToolResult::error(vec![ContentBlock::text(text)]).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(toml: &str) -> Config {
+        toml::from_str(toml).unwrap()
+    }
+
+    #[test]
+    fn reload_keeps_unchanged_upstreams() {
+        let store = ToolStore::new(None);
+        let (tx, _) = broadcast::channel(1);
+        let before = config(
+            r#"
+            [servers.same]
+            command = "a"
+            [servers.changed]
+            command = "b"
+            [servers.removed]
+            command = "c"
+            "#,
+        );
+        let after = config(
+            r#"
+            [servers.same]
+            command = "a"
+            [servers.changed]
+            command = "b"
+            args = ["--new"]
+            [servers.added]
+            command = "d"
+            "#,
+        );
+        let (old, _) = State::build(before, None, &store, &tx);
+        let (new, retired) = State::build(after, Some(&old), &store, &tx);
+
+        let same = |s: &State| s.upstream("same").unwrap().clone();
+        assert!(Arc::ptr_eq(&same(&old), &same(&new)));
+        assert!(!Arc::ptr_eq(
+            old.upstream("changed").unwrap(),
+            new.upstream("changed").unwrap()
+        ));
+        let mut retired: Vec<&str> = retired.iter().map(|u| u.name.as_str()).collect();
+        retired.sort();
+        assert_eq!(retired, ["changed", "removed"]);
+        assert!(new.upstream("added").is_some());
+    }
+
+    #[test]
+    fn global_settings_that_affect_upstreams_restart_them() {
+        let store = ToolStore::new(None);
+        let (tx, _) = broadcast::channel(1);
+        let (old, _) = State::build(config("[servers.x]\ncommand = \"a\""), None, &store, &tx);
+        let with_idle = config("idle_timeout_secs = 60\n[servers.x]\ncommand = \"a\"");
+        let (new, retired) = State::build(with_idle, Some(&old), &store, &tx);
+        assert_eq!(retired.len(), 1);
+        assert!(!Arc::ptr_eq(
+            old.upstream("x").unwrap(),
+            new.upstream("x").unwrap()
+        ));
+    }
 }

@@ -42,6 +42,8 @@ Clients with their own tool search (Claude Code, Pi) use `static`, others `dynam
 
 A complete, commented example: [`config.example.toml`](config.example.toml).
 
+Changes to the file are applied while running (also on `SIGHUP`): unchanged servers keep running, `[http]` settings need a restart.
+
 ```toml
 mode = "static"
 idle_timeout_secs = 600

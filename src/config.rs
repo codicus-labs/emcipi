@@ -42,7 +42,7 @@ pub struct Config {
     pub base_dir: PathBuf,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpConfig {
     #[serde(default = "default_listen")]
@@ -68,7 +68,7 @@ impl Default for HttpConfig {
 
 /// Values of `command`, `args`, `env`, `cwd`, `url` and `headers` may contain
 /// placeholders (see [`interpolate`]); they are resolved on every connect.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_true")]
@@ -224,6 +224,25 @@ impl ServerConfig {
             .iter()
             .map(|(k, v)| (format!("headers.{k}"), v.as_str()));
         single.chain(args).chain(env).chain(headers)
+    }
+}
+
+/// Values from CLI flags or environment variables; they win over the config file,
+/// also after a reload.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Overrides {
+    pub mode: Option<Mode>,
+    pub idle_timeout_secs: Option<u64>,
+}
+
+impl Overrides {
+    pub fn apply(&self, cfg: &mut Config) {
+        if let Some(mode) = self.mode {
+            cfg.mode = mode;
+        }
+        if let Some(secs) = self.idle_timeout_secs {
+            cfg.idle_timeout_secs = Some(secs);
+        }
     }
 }
 

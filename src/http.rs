@@ -23,7 +23,6 @@ pub struct HttpOptions<'a> {
     pub cfg: &'a HttpConfig,
     /// Already resolved bearer token for inbound requests.
     pub auth_token: Option<String>,
-    pub default_mode: Mode,
 }
 
 /// Serves `{path}` with the default mode plus `{path}/static` and `{path}/dynamic`,
@@ -39,7 +38,7 @@ pub async fn serve(
     if let Some(hosts) = &cfg.allowed_hosts {
         server_cfg = server_cfg.with_allowed_hosts(hosts.clone());
     }
-    let service = |mode: Mode| {
+    let service = |mode: Option<Mode>| {
         let gateway = Gateway {
             hub: hub.clone(),
             mode,
@@ -53,12 +52,9 @@ pub async fn serve(
 
     let base = cfg.path.trim_end_matches('/');
     let mut mcp = Router::new()
-        .route_service(
-            if base.is_empty() { "/" } else { base },
-            service(opts.default_mode),
-        )
-        .route_service(&format!("{base}/static"), service(Mode::Static))
-        .route_service(&format!("{base}/dynamic"), service(Mode::Dynamic));
+        .route_service(if base.is_empty() { "/" } else { base }, service(None))
+        .route_service(&format!("{base}/static"), service(Some(Mode::Static)))
+        .route_service(&format!("{base}/dynamic"), service(Some(Mode::Dynamic)));
     if let Some(token) = opts.auth_token {
         let expected: Arc<str> = format!("Bearer {token}").into();
         mcp = mcp.layer(middleware::from_fn(move |req: Request, next: Next| {
@@ -74,9 +70,8 @@ pub async fn serve(
         .await
         .with_context(|| format!("cannot listen on {}", cfg.listen))?;
     tracing::info!(
-        "listening on http://{}{base} (default mode: {:?}; also {base}/static, {base}/dynamic)",
-        cfg.listen,
-        opts.default_mode
+        "listening on http://{}{base} (also {base}/static and {base}/dynamic)",
+        cfg.listen
     );
     axum::serve(listener, app)
         .with_graceful_shutdown(async move { shutdown.cancelled().await })
