@@ -64,7 +64,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: emcipi-*.*
+          path: |
+            emcipi-*.tar.gz
+            emcipi-*.zip
           if-no-files-found: error
 
   release:
