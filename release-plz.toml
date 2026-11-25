@@ -3,3 +3,4 @@ git_only = true
 publish = false
 git_release_enable = false
 release_always = false
+release_commits = '(?m)\A(?:feat|fix|perf)(?:\([^)\r\n]+\))?!?: |\A[a-z][a-z0-9-]*(?:\([^)\r\n]+\))?!: |^BREAKING[ -]CHANGE: '

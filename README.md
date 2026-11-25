@@ -120,6 +120,6 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `typ
 
 ## Releasing
 
-Release-plz uses Conventional Commits on `main` to prepare a release PR with the next version and changelog. Merge that PR to create the `vX.Y.Z` tag. The tag triggers CI to build binaries and publish the GitHub release; nothing is published to crates.io.
+Release-plz prepares a release PR when at least one unreleased commit on `main` is a `feat`, `fix`, `perf`, or breaking change. Use `fix(deps)` for a dependency update that needs a release, such as a security fix. Other changes ship with the next release without triggering one on their own. Merge that PR to create the `vX.Y.Z` tag. The tag triggers CI to build binaries and publish the GitHub release; nothing is published to crates.io.
 
 The workflow uses the `RELEASE_PLZ_TOKEN` Actions secret to open release PRs and push tags that trigger CI. Rotate the token before it expires.
