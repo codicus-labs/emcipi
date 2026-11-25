@@ -114,6 +114,10 @@ With `idle_timeout_secs`, unused stdio servers are stopped together with their c
 
 Don't use it for servers that keep session state, such as browser automation or in-memory stores. Set `idle_timeout_secs = 0` for those.
 
+## Commit messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `type(scope): description`, with an optional scope. Use `feat` for features and `fix` for bug fixes, for example `fix(cli): reject invalid config`. Mark breaking changes with `!` before the colon or a `BREAKING CHANGE:` footer. When squash-merging, use the same format for the squash commit message.
+
 ## Releasing
 
 Release-plz uses Conventional Commits on `main` to prepare a release PR with the next version and changelog. Merge that PR to create the `vX.Y.Z` tag. The tag triggers CI to build binaries and publish the GitHub release; nothing is published to crates.io.
