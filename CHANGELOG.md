@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/codicus-labs/emcipi/compare/v0.1.1...v0.1.2) - 2026-11-25
+
+### Other
+
+- document conventional commit messages ([#9](https://github.com/codicus-labs/emcipi/pull/9))
+
 ## [0.1.1](https://github.com/codicus-labs/emcipi/compare/v0.1.0...v0.1.1) - 2026-11-25
 
 ### Other
