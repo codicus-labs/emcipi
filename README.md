@@ -116,4 +116,6 @@ Don't use it for servers that keep session state, such as browser automation or 
 
 ## Releasing
 
-Bump the version in `Cargo.toml`, commit, then run `git tag vX.Y.Z && git push origin vX.Y.Z`. CI builds all platforms and publishes the release.
+Release-plz uses Conventional Commits on `main` to prepare a release PR with the next version and changelog. Merge that PR to create the `vX.Y.Z` tag. The tag triggers CI to build binaries and publish the GitHub release; nothing is published to crates.io.
+
+The workflow uses the `RELEASE_PLZ_TOKEN` Actions secret to open release PRs and push tags that trigger CI. Rotate the token before it expires.
